@@ -1,0 +1,48 @@
+{
+  "citation": "",
+  "description": "",
+  "features": {
+    "system": {
+      "dtype": "string",
+      "_type": "Value"
+    },
+    "bbcid": {
+      "dtype": "string",
+      "_type": "Value"
+    },
+    "summary": {
+      "dtype": "string",
+      "_type": "Value"
+    },
+    "annotations": [
+      {
+        "hallucination_type": {
+          "dtype": "string",
+          "_type": "Value"
+        },
+        "worker_id": {
+          "dtype": "string",
+          "_type": "Value"
+        }
+      }
+    ],
+    "document": {
+      "dtype": "string",
+      "_type": "Value"
+    },
+    "predictions": [
+      {
+        "HALL": {
+          "dtype": "float64",
+          "_type": "Value"
+        },
+        "NOHALL": {
+          "dtype": "float64",
+          "_type": "Value"
+        }
+      }
+    ]
+  },
+  "homepage": "",
+  "license": ""
+}
