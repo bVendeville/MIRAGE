@@ -30,18 +30,16 @@
       "dtype": "string",
       "_type": "Value"
     },
-    "predictions": [
-      {
-        "HALL": {
-          "dtype": "float64",
-          "_type": "Value"
-        },
-        "NOHALL": {
-          "dtype": "float64",
-          "_type": "Value"
-        }
+    "predictions": {
+      "HALL": {
+        "dtype": "float64",
+        "_type": "Value"
+      },
+      "NOHALL": {
+        "dtype": "float64",
+        "_type": "Value"
       }
-    ]
+    }
   },
   "homepage": "",
   "license": ""
