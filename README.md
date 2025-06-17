@@ -168,6 +168,9 @@ scores.combined_plots(
     save_path="results/plots/combined_metrics.png"
 )
 ```
+![Combined Plot](plots/plots.png)
+
+
 ## 🧠 Metric Overview
 Metric	Type	Description
 FactCC	Classifier	Predicts factual correctness using a fine-tuned BERT model
