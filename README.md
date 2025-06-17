@@ -1,7 +1,7 @@
 # Mirage: A Unified Library for Benchmarking Factual Consistency
 
-**Authors**: _Your Name_, _Your Advisor_  
-**Affiliation**: _Your Institution / Research Group_  
+**Authors**: Benjamin Vendeville1 Liana Ermakova1 Pierre De Loor2 Jaap Kamps3
+**Affiliation**: 1Université de Bretagne Occidentale, Brest, France 2ENIB, Brest, France 3University of Amsterdam, Amsterdam, The Netherlands  
 **Status**: Research Resource Paper Submission (2025)  
 **License**: TODO
 
