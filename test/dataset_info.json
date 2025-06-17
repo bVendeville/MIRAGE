@@ -1,0 +1,56 @@
+{
+  "builder_name": "json",
+  "citation": "",
+  "config_name": "default",
+  "dataset_name": "json",
+  "dataset_size": 245,
+  "description": "",
+  "download_checksums": {
+    "/home/benjamin/work/github_repositories/MIRAGE/input/test_data.json": {
+      "num_bytes": 289,
+      "checksum": null
+    }
+  },
+  "download_size": 289,
+  "features": {
+    "text": {
+      "dtype": "string",
+      "_type": "Value"
+    },
+    "gen": {
+      "dtype": "string",
+      "_type": "Value"
+    },
+    "predictions": {
+      "HALL": {
+        "dtype": "float64",
+        "_type": "Value"
+      },
+      "NOHALL": {
+        "dtype": "float64",
+        "_type": "Value"
+      }
+    },
+    "score": {
+      "dtype": "float64",
+      "_type": "Value"
+    }
+  },
+  "homepage": "",
+  "license": "",
+  "size_in_bytes": 534,
+  "splits": {
+    "train": {
+      "name": "train",
+      "num_bytes": 245,
+      "num_examples": 3,
+      "dataset_name": "json"
+    }
+  },
+  "version": {
+    "version_str": "0.0.0",
+    "major": 0,
+    "minor": 0,
+    "patch": 0
+  }
+}

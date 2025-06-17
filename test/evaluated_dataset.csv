@@ -1,0 +1,4 @@
+text,gen,predictions,score
+The mitochondria is the powerhouse of the cell.,Mitochondria produce energy in cells.,"{'HALL': 0.0011215144768357277, 'NOHALL': 0.9988784193992615}",0.0011215144768357277
+Water boils at 100 degrees Celsius.,Water turns to steam at 100°C.,"{'HALL': 0.0006005106843076646, 'NOHALL': 0.9993995428085327}",0.0006005106843076646
+The Eiffel Tower is located in Paris.,Paris is home to the Eiffel Tower.,"{'HALL': 0.02096652425825596, 'NOHALL': 0.9790335297584534}",0.02096652425825596
