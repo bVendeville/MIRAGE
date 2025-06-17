@@ -1,3 +1,0 @@
-{"text":"The mitochondria is the powerhouse of the cell.","gen":"Mitochondria produce energy in cells.","predictions":{"HALL":0.001121516,"NOHALL":0.9988784194},"score":0.001121516}
-{"text":"Water boils at 100 degrees Celsius.","gen":"Water turns to steam at 100\u00b0C.","predictions":{"HALL":0.0006005081,"NOHALL":0.9993995428},"score":0.0006005081}
-{"text":"The Eiffel Tower is located in Paris.","gen":"Paris is home to the Eiffel Tower.","predictions":{"HALL":0.0209665764,"NOHALL":0.9790334105},"score":0.0209665764}
