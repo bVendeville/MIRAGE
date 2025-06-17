@@ -93,7 +93,7 @@ evaluated_feqa = metric2.evaluate_dataset(
 )
 ```
 
-### Compute Benchmark Scores and Visualize
+### Compute Benchmark Scores
 
 ```python
 from mirage import ScoreManager
@@ -137,6 +137,8 @@ display(score_manager.results)
                             [381, 925]])}
 ```
 
+### Plot Benchmark scores
+
 ```python
 # Choosing metrics to plot
 plot_list = ["metrics_bar", "roc_curve", "precision_recall_curve", "confusion_matrix"]
@@ -152,6 +154,8 @@ scores.plot(
     interactive=False
 )
 ```
+![Confusion matrix](plots/confusion_matrix.png)
+
 For combined plots:
 
 ```python
