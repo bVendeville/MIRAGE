@@ -7,6 +7,8 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import torch
 import spacy
+import warnings
+from typing import Union
 
 from sklearn.metrics import (
     f1_score, roc_auc_score, precision_score, recall_score, accuracy_score,
@@ -23,6 +25,9 @@ from transformers import T5Tokenizer, PreTrainedTokenizer, AutoTokenizer
 from transformers import pipeline
 from transformers import EvalPrediction
 
+# Optional: for interactive plotting
+import plotly.express as px
+import plotly.graph_objects as go
 
 
 #------------------------------------
@@ -40,7 +45,7 @@ def check_and_install(package: str) -> None:
         print(f"{package} is already installed.")
 
 
-def load_to_hf_dataset(obj):
+def OLD_load_to_hf_dataset(obj):
     if isinstance(obj, pd.DataFrame):
         # Convert pandas DataFrame to Hugging Face Dataset
         return Dataset.from_pandas(obj)
@@ -55,6 +60,7 @@ def load_to_hf_dataset(obj):
         file_ext = os.path.splitext(obj)[-1].lower()
         if file_ext == ".json":
             # Load JSON file
+            print(pd.DataFrame(obj))
             return Dataset.from_json(obj)
         elif file_ext in [".csv", ".xls", ".xlsx"]:
             # Load CSV or Excel file into pandas first
@@ -65,6 +71,36 @@ def load_to_hf_dataset(obj):
     else:
         raise TypeError("Unsupported input type. Expected pandas.DataFrame, Hugging Face Dataset, or file path.")
 
+def load_to_hf_dataset(data: Union[str, pd.DataFrame, Dataset]) -> Dataset:
+    """
+    Ensure input is a Hugging Face Dataset, converting from path or DataFrame if needed.
+
+    Args:
+        data (str | pd.DataFrame | Dataset): Path to file (csv/json), pandas DataFrame, or Dataset.
+
+    Returns:
+        Dataset: Hugging Face Dataset
+    """
+    if isinstance(data, Dataset):
+        return data
+    elif isinstance(data, pd.DataFrame):
+        return Dataset.from_pandas(data)
+    elif isinstance(data, str):
+        if not os.path.exists(data):
+            raise FileNotFoundError(f"File not found: {data}")
+        
+        ext = os.path.splitext(data)[1].lower()
+        if ext == ".csv":
+            return load_dataset("csv", data_files=data)["train"]
+        elif ext == ".json":
+            return load_dataset("json", data_files=data)["train"]
+        elif ext == ".txt":
+            return load_dataset("text", data_files=data)["train"]
+        else:
+            raise ValueError(f"Unsupported file extension: {ext}")
+    else:
+        raise TypeError(f"Unsupported input type: {type(data)}. Must be Dataset, DataFrame, or path to file.")
+    
 # Usage examples:
 # df = pd.DataFrame(...)  # Example DataFrame
 # ds = load_to_hf_dataset(df)
@@ -79,242 +115,653 @@ def load_to_hf_dataset(obj):
 # Class to generate accuracy, recall etc... and graphs on annotated evaluated datasets
 #------------------------------------
 
+# Handle datasets import
+try:
+    from datasets import Dataset, DatasetDict
+except ImportError:
+    # Fallback for when datasets is not available
+    Dataset = dict
+    DatasetDict = dict
+
 
 class ScoreManager:
-    def __init__(self, dataset: Dataset, metric_list: list[str], on_split: str ="test"):
+    def __init__(self, dataset, metric_list: list[str], on_split: str = "test"):
         """
         Initialize the ScoreManager with dataset and metrics to compute.
 
         Args:
-            dataset (dict): The dataset containing 'label' and 'predictions' keys.
+            dataset: The dataset containing 'label' and 'predictions' keys.
             metric_list (list): List of metric names to compute. Supported metrics:
                                 ['f1', 'precision', 'recall', 'accuracy',
                                  'balanced_accuracy', 'mcc', 'kappa',
-                                 'log_loss', 'roc_values', 'auc',
-                                 'confusion_matrix', 'precision_recall_values'].
+                                 'log_loss', 'roc_values', 'auroc', 'auprc',
+                                 'confusion_matrix', 'precision_recall_values', 'data_stats'].
+            on_split (str): Dataset split to use if dataset has multiple splits.
         """
+        # Handle dataset splits
+        self.dataset = self._handle_dataset_splits(dataset, on_split)
+        
+        # Extract labels and predictions
+        self.labels = self._extract_labels()
+        self.class_scores = self.dataset["predictions"]
+        self.predicted_labels = [self._get_predicted_label(example) for example in self.dataset]
+        self.metric_list = metric_list
+        
+        # Initialize results dictionary
+        self.results = {}
+        
+        # Set label names for confusion matrix
+        self.label_names = ['HALL', 'NOHALL']
+        
+        # Calculate all requested metrics
+        self._calculate_metrics()
 
-        # Check if the dataset has splits (is a DatasetDict)
-        if isinstance(dataset, DatasetDict):
+    def _handle_dataset_splits(self, dataset, on_split):
+        """Handle dataset with or without splits."""
+        if hasattr(dataset, 'keys') and callable(dataset.keys):
+            # Check if it's a DatasetDict-like object
             if on_split is None:
                 raise ValueError("The dataset has splits, but no split was provided. Please specify a split (e.g., 'train', 'test').")
-            # Select the provided split
+            
             if on_split in dataset:
-                dataset = dataset[on_split]
+                return dataset[on_split]
             else:
-                raise ValueError(f"Split '{on_split}' does not exist in the dataset. Available splits: {list(dataset.keys())}")
-        # If no splits, use the entire dataset dont need to change anything
-        display(dataset)
+                available_splits = list(dataset.keys()) if hasattr(dataset, 'keys') else ['unknown']
+                raise ValueError(f"Split '{on_split}' does not exist in the dataset. Available splits: {available_splits}")
+        
+        return dataset
 
-        self.labels = dataset["label"]
-        self.class_scores = dataset["predictions"]
-        self.predicted_labels = [self.get_predicted_label(example) for example in dataset]
-        self.metric_list = metric_list
+    def _extract_labels(self):
+        """Extract and flatten labels if needed."""
+        labels = self.dataset["label"]
+        
+        # Flatten labels if they are nested lists
+        if isinstance(labels[0], list):
+            labels = [label[0] for label in labels]
+        
+        return labels
 
-        # Initialize metrics attributes
-        self.results = {}
-        self.calculate_metrics()
-
-        # Calculate and store ROC and precision-recall results
-        #self.results['roc_auc'], self.results['roc_values'] = self.calculate_roc()
-        #self.results['pr_values'] = self.calculate_precision_recall()
-
-        # Calculate confusion matrix
-        #self.results['confusion_matrix'] = self.calculate_confusion_matrix()
-
-    def get_predicted_label(self, example):
+    def _get_predicted_label(self, example):
         """Get the label with the highest score from predictions."""
         prediction_dict = example["predictions"]
         return max(prediction_dict, key=prediction_dict.get)
 
-    def calculate_metrics(self):
-        """Calculate and store the specified metrics."""
+    def _calculate_metrics(self):
+        """Calculate and store all specified metrics."""
         for metric in self.metric_list:
-            method_name = f"calculate_{metric}"
-            if hasattr(self, method_name):
-                self.results[metric] = getattr(self, method_name)()
+            if metric == "data_stats":
+                self.results["data_stats"] = self._calculate_data_stats()
             else:
-                raise ValueError(f"Unsupported metric: {metric}")
+                method_name = f"_calculate_{metric}"
+                if hasattr(self, method_name):
+                    self.results[metric] = getattr(self, method_name)()
+                else:
+                    raise ValueError(f"Unsupported metric: {metric}")
 
-    def calculate_f1(self):
+    # Metric calculation methods
+    def _calculate_f1(self):
         """Calculate F1 score."""
         return f1_score(self.labels, self.predicted_labels, average='weighted')
 
-    def calculate_precision(self):
+    def _calculate_precision(self):
         """Calculate precision score."""
         return precision_score(self.labels, self.predicted_labels, average='weighted')
 
-    def calculate_recall(self):
+    def _calculate_recall(self):
         """Calculate recall score."""
         return recall_score(self.labels, self.predicted_labels, average='weighted')
 
-    def calculate_accuracy(self):
+    def _calculate_accuracy(self):
         """Calculate accuracy score."""
         return accuracy_score(self.labels, self.predicted_labels)
 
-    def calculate_balanced_accuracy(self):
+    def _calculate_balanced_accuracy(self):
         """Calculate balanced accuracy score."""
         return balanced_accuracy_score(self.labels, self.predicted_labels)
 
-    def calculate_mcc(self):
+    def _calculate_mcc(self):
         """Calculate Matthews Correlation Coefficient."""
         return matthews_corrcoef(self.labels, self.predicted_labels)
 
-    def calculate_kappa(self):
+    def _calculate_kappa(self):
         """Calculate Cohen's Kappa score."""
         return cohen_kappa_score(self.labels, self.predicted_labels)
 
-    def calculate_log_loss(self):
+    def _calculate_log_loss(self):
         """Calculate Log Loss (Cross-Entropy Loss)."""
-        y_pred_proba = [list(example.values()) for example in self.class_scores]
-        return log_loss(self.labels, y_pred_proba)
+        y_true = self.labels
+        class_names = sorted(list(self.class_scores[0].keys()))
+        y_pred_proba = [[pred[class_name] for class_name in class_names] for pred in self.class_scores]
+        return log_loss(y_true, y_pred_proba, labels=class_names)
 
-    def calculate_roc_values(self):
-        """Calculate ROC curve and AUC."""
+    def _calculate_roc_values(self):
+        """Calculate ROC curve values."""
         y_true = np.array([1 if label == 'HALL' else 0 for label in self.labels])
         y_scores = [example['HALL'] for example in self.class_scores]
-
+        
         fpr, tpr, thresholds = roc_curve(y_true, y_scores)
-
         return {'fpr': fpr, 'tpr': tpr, 'thresholds': thresholds}
 
-    def calculate_auc(self):
-        """Calculate ROC curve and AUC."""
+    def _calculate_auroc(self):
+        """Calculate AUROC (Area Under ROC Curve)."""
         y_true = np.array([1 if label == 'HALL' else 0 for label in self.labels])
         y_scores = [example['HALL'] for example in self.class_scores]
+        
+        fpr, tpr, _ = roc_curve(y_true, y_scores)
+        return auc(fpr, tpr)
 
-        fpr, tpr, thresholds = roc_curve(y_true, y_scores)
-        roc_auc = auc(fpr, tpr)
+    def _calculate_auprc(self):
+        """Calculate area under the precision-recall curve (AUPRC)."""
+        y_true = np.array([1 if label == 'HALL' else 0 for label in self.labels])
+        y_scores = [example['HALL'] for example in self.class_scores]
+        
+        precision, recall, _ = precision_recall_curve(y_true, y_scores)
+        return auc(recall, precision)
 
-        return roc_auc
-
-    def calculate_precision_recall_values(self):
+    def _calculate_precision_recall_values(self):
         """Calculate Precision-Recall curve values."""
         y_true = np.array([1 if label == 'HALL' else 0 for label in self.labels])
         y_scores = [example['HALL'] for example in self.class_scores]
-
+        
         precision, recall, thresholds = precision_recall_curve(y_true, y_scores)
-
         return {'precision': precision, 'recall': recall, 'thresholds': thresholds}
 
-    def calculate_confusion_matrix(self):
+    def _calculate_confusion_matrix(self):
         """Calculate confusion matrix."""
-        cm = confusion_matrix(self.labels, self.predicted_labels, labels=['HALL', 'NOHALL'])
-        return cm
+        return confusion_matrix(self.labels, self.predicted_labels, labels=self.label_names)
 
-    def plot_confusion_matrix(self):
-        """Plot the confusion matrix."""
-        if "confusion_matrix" not in self.results:
-            self.results["confusion_matrix"] = self.calculate_confusion_matrix()
+    def _calculate_data_stats(self):
+        """Calculate basic statistics on labels and scores."""
+        total = len(self.labels)
+        pos_count = sum(1 for l in self.labels if l == 'HALL')
+        neg_count = total - pos_count
+        pos_ratio = pos_count / total if total else 0
+        neg_ratio = neg_count / total if total else 0
 
-        cm = self.results['confusion_matrix']
-        plt.figure()
-        plt.imshow(cm, interpolation='nearest', cmap=plt.cm.Blues)
-        plt.title('Confusion Matrix')
-        plt.colorbar()
-        tick_marks = np.arange(len(['HALL', 'NOHALL']))
-        plt.xticks(tick_marks, ['HALL', 'NOHALL'])
-        plt.yticks(tick_marks, ['HALL', 'NOHALL'])
+        # Scores for positive class
+        y_scores = [example['HALL'] for example in self.class_scores]
+        mean_score = sum(y_scores) / total if total else 0
+        std_score = (sum((s - mean_score) ** 2 for s in y_scores) / total) ** 0.5 if total else 0
 
-        threshold = cm.max() / 2
-        for i, j in np.ndindex(cm.shape):
-            plt.text(j, i, format(cm[i, j]),
-                     horizontalalignment="center",
-                     color="white" if cm[i, j] > threshold else "black")
+        return {
+            'total_samples': total,
+            'pos_count': pos_count,
+            'neg_count': neg_count,
+            'pos_ratio': pos_ratio,
+            'neg_ratio': neg_ratio,
+            'mean_score': mean_score,
+            'std_score': std_score
+        }
 
-        plt.ylabel('True label')
-        plt.xlabel('Predicted label')
-        plt.tight_layout()
-        return plt
+    # Plotting helper methods
+    def _ensure_fig_ax(self, ax=None, figsize=(8, 6)):
+        """Helper to ensure we have a figure and axes."""
+        if ax is None:
+            fig, ax = plt.subplots(figsize=figsize)
+            return fig, ax, True
+        else:
+            return ax.figure, ax, False
 
-    def plot_metrics_bar_chart(self, metrics_to_plot):
-        """Plot a bar chart for specified metrics."""
-        values = [self.results[metric] for metric in metrics_to_plot if metric in self.results]
-
-        plt.figure(figsize=(10, 6))
-        bars = plt.bar(metrics_to_plot, values, color=plt.cm.viridis(np.linspace(0, 1, len(values))))
-
-        plt.xlabel('Metrics')
-        plt.ylabel('Values')
-        plt.title('Metrics Bar Chart')
-        plt.xticks(rotation=45, ha='right')
-        plt.ylim(0, 1)  # Adjust y-axis as necessary
-
-        # Adding value labels on top of the bars
-        for bar in bars:
-            yval = bar.get_height()
-            plt.text(bar.get_x() + bar.get_width()/2, yval, round(yval, 2), ha='center', va='bottom')
-
-        plt.tight_layout()
-        return plt
-
-    def plot_roc_curve(self):
-        """Plot ROC curve."""
-        if "roc_values" not in self.results:
-            self.results["roc_values"] = self.calculate_roc_values()
-        if "roc_auc" not in self.results:
-            self.results["roc_auc"] = self.calculate_auc()
-
-        roc_values = self.results['roc_values']
-        plt.figure()
-        plt.plot(roc_values['fpr'], roc_values['tpr'], color='blue', label='ROC curve (area = {:.2f})'.format(self.results['roc_auc']))
-        plt.plot([0, 1], [0, 1], color='red', linestyle='--')
-        plt.xlabel('False Positive Rate')
-        plt.ylabel('True Positive Rate')
-        plt.title('Receiver Operating Characteristic')
-        plt.legend(loc='lower right')
-        return plt
-
-    def plot_precision_recall_curve(self):
-        """Plot Precision-Recall curve."""
-        if "pr_values" not in self.results:
-            self.results["roc_values"] = self.calculate_precision_recall_values()
-
-        pr_values = self.results['precision_recall_values']
-        plt.figure()
-        plt.plot(pr_values['recall'], pr_values['precision'], color='blue')
-        plt.xlabel('Recall')
-        plt.ylabel('Precision')
-        plt.title('Precision-Recall Curve')
-        return plt
-
-    def plot(self, plot_list, metrics_bar=None, save_plots=False, output_path=None):
-        """Plot specified metrics and visualizations from the provided list.
-
-        Args:
-            plot_list (list): List of plot types to generate.
-            metrics_bar (list, optional): Metrics to plot in the bar chart.
-            save_plots (bool, optional): Whether to save the plots to files.
-            output_path (str, optional): Path to save plots if save_plots is True.
-        """
-        for plot_type in plot_list:
-            if plot_type == 'metrics_bar' and metrics_bar:
-                bar_plot = self.plot_metrics_bar_chart(metrics_bar)
-                if save_plots and output_path:
-                    bar_plot.savefig(f'{output_path}/metrics_bar_chart.png')
-                else:
-                    plt.show()
-            elif plot_type == 'roc_curve':
-                roc_plot = self.plot_roc_curve()
-                if save_plots and output_path:
-                    roc_plot.savefig(f'{output_path}/roc_curve.png')
-                else:
-                    plt.show()
-            elif plot_type == 'precision_recall_curve':
-                pr_plot = self.plot_precision_recall_curve()
-                if save_plots and output_path:
-                    pr_plot.savefig(f'{output_path}/precision_recall_curve.png')
-                else:
-                    plt.show()
-            elif plot_type == 'confusion_matrix':
-                cm_plot = self.plot_confusion_matrix()
-                if save_plots and output_path:
-                    cm_plot.savefig(f'{output_path}/confusion_matrix.png')
-                else:
-                    plt.show()
+    def _save_plot(self, fig, output_path, filename, save_format):
+        """Save plot to file."""
+        if output_path:
+            os.makedirs(output_path, exist_ok=True)
+            filepath = os.path.join(output_path, f"{filename}.{save_format}")
+            
+            if save_format.lower() == 'html':
+                # For interactive HTML saving with matplotlib, use mpld3
+                try:
+                    import mpld3
+                    # Configure mpld3 for better interactivity
+                    mpld3.enable_notebook()
+                    html_str = mpld3.fig_to_html(fig, template_type='general')
+                    with open(filepath, 'w') as f:
+                        f.write(html_str)
+                    print(f"Interactive HTML plot saved: {filepath}")
+                except ImportError:
+                    print(f"Warning: mpld3 not available. Cannot save {filename} as interactive HTML.")
+                    print("Install with: pip install mpld3")
+                    print("Falling back to PNG format.")
+                    filepath = os.path.join(output_path, f"{filename}.png")
+                    fig.savefig(filepath, bbox_inches='tight', dpi=300)
+                    print(f"Static plot saved: {filepath}")
             else:
-                raise ValueError(f"Unsupported plot type: {plot_type}")
+                fig.savefig(filepath, bbox_inches='tight', dpi=300)
+                print(f"Plot saved: {filepath}")
 
+    def _save_plotly_figure(self, fig, output_path, filename, save_format):
+        """Save plotly figure to file."""
+        if output_path:
+            os.makedirs(output_path, exist_ok=True)
+            filepath = os.path.join(output_path, f"{filename}.{save_format}")
+            
+            if save_format.lower() == 'html':
+                # Save as fully interactive HTML
+                fig.write_html(filepath, 
+                              include_plotlyjs=True,  # Include plotly.js for full interactivity
+                              config={'displayModeBar': True,  # Show toolbar
+                                     'toImageButtonOptions': {'format': 'png', 'filename': filename},
+                                     'displaylogo': False})
+                print(f"Interactive HTML plot saved: {filepath}")
+            else:
+                try:
+                    fig.write_image(filepath)
+                    print(f"Plot saved: {filepath}")
+                except Exception as e:
+                    print(f"Error saving image: {e}")
+                    print("For image export, install: pip install kaleido")
+
+    # Individual plotting methods
+    def _plot_metrics_bar(self, metrics_bar, show_plot, save_plot, output_path, save_format, interactive, palette, ax=None):
+        """Plot metrics bar chart."""
+        values = [self.results.get(m, 0) for m in metrics_bar]
+        
+        if interactive:
+            try:
+                import plotly.express as px
+                import pandas as pd
+                
+                df = pd.DataFrame({'Metrics': metrics_bar, 'Values': values})
+                fig = px.bar(
+                    df,
+                    x='Metrics',
+                    y='Values',
+                    title='Metrics Bar Chart',
+                    color='Metrics',
+                    color_discrete_sequence=palette or px.colors.qualitative.Pastel
+                )
+                fig.update_layout(showlegend=False)
+                
+                if save_plot:
+                    self._save_plotly_figure(fig, output_path, "metrics_bar", save_format)
+                if show_plot:
+                    fig.show()
+                    
+            except ImportError:
+                print("Warning: Plotly not available. Using matplotlib instead.")
+                interactive = False
+        
+        if not interactive:
+            fig, ax, created = self._ensure_fig_ax(ax)
+            
+            colors = palette if palette else plt.cm.Set3.colors
+            bars = ax.bar(metrics_bar, values, color=colors[:len(metrics_bar)])
+            
+            ax.set_title("Metrics Bar Chart")
+            ax.set_ylabel("Values")
+            ax.set_xlabel("Metrics")
+            ax.tick_params(axis='x', rotation=45)
+            ax.set_ylim(0, 1)
+            
+            # Add value labels on bars
+            for bar, value in zip(bars, values):
+                height = bar.get_height()
+                ax.text(bar.get_x() + bar.get_width()/2., height + 0.01,
+                       f'{value:.3f}', ha='center', va='bottom')
+            
+            if save_plot:
+                self._save_plot(fig, output_path, "metrics_bar", save_format)
+            if show_plot and created:
+                plt.show()
+
+    def _plot_roc_curve(self, show_plot, save_plot, output_path, save_format, interactive, ax=None):
+        """Plot ROC curve."""
+        if 'roc_values' not in self.results:
+            self.results['roc_values'] = self._calculate_roc_values()
+        if 'auroc' not in self.results:
+            self.results['auroc'] = self._calculate_auroc()
+            
+        roc_values = self.results['roc_values']
+        auc_score = self.results['auroc']
+        
+        if interactive:
+            try:
+                import plotly.graph_objects as go
+                
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(
+                    x=roc_values['fpr'].tolist(), 
+                    y=roc_values['tpr'].tolist(), 
+                    mode='lines',
+                    name=f'ROC curve (AUC = {auc_score:.3f})',
+                    line=dict(color='blue', width=2)
+                ))
+                fig.add_trace(go.Scatter(
+                    x=[0, 1], 
+                    y=[0, 1], 
+                    mode='lines',
+                    name='Random classifier',
+                    line=dict(dash='dash', color='red')
+                ))
+                fig.update_layout(
+                    title='Receiver Operating Characteristic (ROC) Curve',
+                    xaxis_title='False Positive Rate',
+                    yaxis_title='True Positive Rate',
+                    showlegend=True
+                )
+                
+                if save_plot:
+                    self._save_plotly_figure(fig, output_path, "roc_curve", save_format)
+                if show_plot:
+                    fig.show()
+                    
+            except ImportError:
+                print("Warning: Plotly not available. Using matplotlib instead.")
+                interactive = False
+        
+        if not interactive:
+            fig, ax, created = self._ensure_fig_ax(ax)
+            
+            ax.plot(roc_values['fpr'], roc_values['tpr'], 
+                   color='blue', linewidth=2, label=f'ROC curve (AUC = {auc_score:.3f})')
+            ax.plot([0, 1], [0, 1], linestyle='--', color='red', 
+                   linewidth=1, label='Random classifier')
+            
+            ax.set_xlabel('False Positive Rate')
+            ax.set_ylabel('True Positive Rate')
+            ax.set_title('Receiver Operating Characteristic (ROC) Curve')
+            ax.legend(loc='lower right')
+            ax.grid(True, alpha=0.3)
+            
+            if save_plot:
+                self._save_plot(fig, output_path, "roc_curve", save_format)
+            if show_plot and created:
+                plt.show()
+
+    def _plot_precision_recall_curve(self, show_plot, save_plot, output_path, save_format, interactive, ax=None):
+        """Plot Precision-Recall curve."""
+        if 'precision_recall_values' not in self.results:
+            self.results['precision_recall_values'] = self._calculate_precision_recall_values()
+        if 'auprc' not in self.results:
+            self.results['auprc'] = self._calculate_auprc()
+            
+        pr_values = self.results['precision_recall_values']
+        auprc_score = self.results['auprc']
+        
+        if interactive:
+            try:
+                import plotly.graph_objects as go
+                
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(
+                    x=pr_values['recall'].tolist(), 
+                    y=pr_values['precision'].tolist(), 
+                    mode='lines',
+                    name=f'PR curve (AUC = {auprc_score:.3f})',
+                    line=dict(color='blue', width=2)
+                ))
+                fig.update_layout(
+                    title='Precision-Recall Curve',
+                    xaxis_title='Recall',
+                    yaxis_title='Precision'
+                )
+                
+                if save_plot:
+                    self._save_plotly_figure(fig, output_path, "precision_recall_curve", save_format)
+                if show_plot:
+                    fig.show()
+                    
+            except ImportError:
+                print("Warning: Plotly not available. Using matplotlib instead.")
+                interactive = False
+        
+        if not interactive:
+            fig, ax, created = self._ensure_fig_ax(ax)
+            
+            ax.plot(pr_values['recall'], pr_values['precision'], 
+                   color='blue', linewidth=2, label=f'PR curve (AUC = {auprc_score:.3f})')
+            
+            ax.set_xlabel('Recall')
+            ax.set_ylabel('Precision')
+            ax.set_title('Precision-Recall Curve')
+            ax.legend()
+            ax.grid(True, alpha=0.3)
+            
+            if save_plot:
+                self._save_plot(fig, output_path, "precision_recall_curve", save_format)
+            if show_plot and created:
+                plt.show()
+
+    def _plot_confusion_matrix(self, show_plot, save_plot, output_path, save_format, interactive, ax=None):
+        """Plot confusion matrix."""
+        if 'confusion_matrix' not in self.results:
+            self.results['confusion_matrix'] = self._calculate_confusion_matrix()
+            
+        cm = self.results['confusion_matrix']
+        
+        if interactive:
+            try:
+                import plotly.graph_objects as go
+                
+                fig = go.Figure(data=go.Heatmap(
+                    z=cm.tolist(),
+                    x=self.label_names,
+                    y=self.label_names,
+                    colorscale='Blues',
+                    showscale=True,
+                    text=cm.tolist(),
+                    texttemplate="%{text}",
+                    textfont={"size": 16}
+                ))
+                fig.update_layout(
+                    title='Confusion Matrix',
+                    xaxis_title='Predicted Label',
+                    yaxis_title='True Label'
+                )
+                
+                if save_plot:
+                    self._save_plotly_figure(fig, output_path, "confusion_matrix", save_format)
+                if show_plot:
+                    fig.show()
+                    
+            except ImportError:
+                print("Warning: Plotly not available. Using matplotlib instead.")
+                interactive = False
+        
+        if not interactive:
+            fig, ax, created = self._ensure_fig_ax(ax)
+            
+            im = ax.imshow(cm, interpolation='nearest', cmap='Blues')
+            ax.figure.colorbar(im, ax=ax)
+            
+            ax.set_xticks(range(len(self.label_names)))
+            ax.set_yticks(range(len(self.label_names)))
+            ax.set_xticklabels(self.label_names)
+            ax.set_yticklabels(self.label_names)
+            ax.set_xlabel('Predicted Label')
+            ax.set_ylabel('True Label')
+            ax.set_title('Confusion Matrix')
+            
+            # Add text annotations
+            thresh = cm.max() / 2.
+            for i in range(cm.shape[0]):
+                for j in range(cm.shape[1]):
+                    ax.text(j, i, format(cm[i, j], 'd'),
+                           ha="center", va="center",
+                           color="white" if cm[i, j] > thresh else "black",
+                           fontsize=14)
+            
+            if save_plot:
+                self._save_plot(fig, output_path, "confusion_matrix", save_format)
+            if show_plot and created:
+                plt.show()
+
+    def _plot_score_distribution(self, show_plot, save_plot, output_path, save_format, interactive, palette, ax=None):
+        """Plot score distribution."""
+        y_scores = [example['HALL'] for example in self.class_scores]
+        
+        if interactive:
+            try:
+                import plotly.express as px
+                import pandas as pd
+                
+                df = pd.DataFrame({'scores': y_scores})
+                fig = px.histogram(
+                    df,
+                    x='scores',
+                    nbins=50,
+                    title='Distribution of HALL Scores',
+                    labels={'scores': 'Score', 'count': 'Count'},
+                    color_discrete_sequence=palette or ['blue']
+                )
+                
+                if save_plot:
+                    self._save_plotly_figure(fig, output_path, "score_distribution", save_format)
+                if show_plot:
+                    fig.show()
+                    
+            except ImportError:
+                print("Warning: Plotly not available. Using matplotlib instead.")
+                interactive = False
+        
+        if not interactive:
+            fig, ax, created = self._ensure_fig_ax(ax)
+            
+            color = palette[0] if palette else 'skyblue'
+            ax.hist(y_scores, bins=50, color=color, alpha=0.7, edgecolor='black')
+            ax.set_title('Distribution of HALL Scores')
+            ax.set_xlabel('Score')
+            ax.set_ylabel('Count')
+            ax.grid(True, alpha=0.3)
+            
+            if save_plot:
+                self._save_plot(fig, output_path, "score_distribution", save_format)
+            if show_plot and created:
+                plt.show()
+
+    # Main plotting interface
+    def plot(self, plot_list, metrics_bar=None, show_plots=True, save_plots=False, 
+             output_path=None, save_format='png', interactive=False, palette=None, ax=None):
+        """
+        Plot specified visualizations.
+        
+        Args:
+            plot_list (list): List of plot types to generate
+            metrics_bar (list): Metrics to include in bar chart
+            show_plots (bool): Whether to display plots
+            save_plots (bool): Whether to save plots
+            output_path (str): Directory to save plots
+            save_format (str): File format for saved plots ('png', 'jpg', 'svg', 'pdf', 'html')
+            interactive (bool): Use interactive plotting with plotly (recommended for HTML)
+            palette (list): Color palette for plots
+            ax: Matplotlib axes object for single plot
+            
+        Note:
+            - For best interactive HTML experience, use interactive=True with save_format='html'
+            - Interactive HTML plots include zoom, pan, hover tooltips, and other interactive features
+            - Plotly creates more interactive HTML than matplotlib+mpld3
+        """
+        if save_plots and output_path:
+            os.makedirs(output_path, exist_ok=True)
+            
+        # Recommend interactive mode for HTML format
+        if save_format.lower() == 'html' and not interactive:
+            print("Tip: For best interactive HTML experience, consider using interactive=True")
+
+        for plot_type in plot_list:
+            try:
+                if plot_type == 'metrics_bar':
+                    metrics_to_plot = metrics_bar or ["f1", "accuracy", "precision", "recall"]
+                    self._plot_metrics_bar(metrics_to_plot, show_plots, save_plots, output_path, 
+                                         save_format, interactive, palette, ax)
+                elif plot_type == 'roc_curve':
+                    self._plot_roc_curve(show_plots, save_plots, output_path, save_format, interactive, ax)
+                elif plot_type == 'precision_recall_curve':
+                    self._plot_precision_recall_curve(show_plots, save_plots, output_path, save_format, interactive, ax)
+                elif plot_type == 'confusion_matrix':
+                    self._plot_confusion_matrix(show_plots, save_plots, output_path, save_format, interactive, ax)
+                elif plot_type == 'score_distribution':
+                    self._plot_score_distribution(show_plots, save_plots, output_path, save_format, 
+                                                interactive, palette, ax)
+                else:
+                    raise ValueError(f"Unsupported plot type: {plot_type}")
+            except Exception as e:
+                print(f"Error plotting {plot_type}: {e}")
+
+    def combined_plots(self, plot_list, title=None, show_plot=True, save_path=None, 
+                      save_format='png', figsize=(15, 10), metrics_bar=None):
+        """
+        Create a combined plot with multiple subplots.
+        
+        Args:
+            plot_list (list): List of plot types to include
+            title (str): Overall title for the combined plot
+            show_plot (bool): Whether to display the combined plot
+            save_path (str): Path to save the combined plot
+            save_format (str): File format for saved plot ('png', 'jpg', 'svg', 'pdf', 'html')
+            figsize (tuple): Figure size
+            metrics_bar (list): Metrics for bar chart
+        """
+        n_plots = len(plot_list)
+        cols = 3
+        rows = (n_plots + cols - 1) // cols
+        
+        fig, axes = plt.subplots(rows, cols, figsize=figsize)
+        if rows == 1:
+            axes = axes.reshape(1, -1)
+        axes = axes.flatten()
+
+        for i, plot_type in enumerate(plot_list):
+            ax = axes[i]
+            try:
+                if plot_type == 'metrics_bar':
+                    metrics_to_plot = metrics_bar or ["f1", "accuracy", "precision", "recall"]
+                    self._plot_metrics_bar(metrics_to_plot, False, False, None, save_format, False, None, ax)
+                elif plot_type == 'roc_curve':
+                    self._plot_roc_curve(False, False, None, save_format, False, ax)
+                elif plot_type == 'precision_recall_curve':
+                    self._plot_precision_recall_curve(False, False, None, save_format, False, ax)
+                elif plot_type == 'confusion_matrix':
+                    self._plot_confusion_matrix(False, False, None, save_format, False, ax)
+                elif plot_type == 'score_distribution':
+                    self._plot_score_distribution(False, False, None, save_format, False, None, ax)
+                else:
+                    ax.text(0.5, 0.5, f"Unsupported plot: {plot_type}", 
+                           ha='center', va='center', transform=ax.transAxes)
+                    ax.set_title(f"{plot_type} (unsupported)")
+            except Exception as e:
+                ax.text(0.5, 0.5, f"Error in {plot_type}:\n{str(e)}", 
+                       ha='center', va='center', transform=ax.transAxes, wrap=True)
+                ax.set_title(f"{plot_type} (error)")
+
+        # Hide unused subplots
+        for j in range(n_plots, len(axes)):
+            fig.delaxes(axes[j])
+
+        if title:
+            fig.suptitle(title, fontsize=30, y=0.98)
+            plt.tight_layout(rect=[0, 0, 1, 0.95])
+        else:
+            plt.tight_layout()
+
+        if save_path:
+            os.makedirs(os.path.dirname(save_path) or '.', exist_ok=True)
+            
+            if save_format.lower() == 'html':
+                try:
+                    import mpld3
+                    # Configure mpld3 for better interactivity
+                    mpld3.enable_notebook()
+                    html_str = mpld3.fig_to_html(fig, template_type='general')
+                    with open(save_path, 'w') as f:
+                        f.write(html_str)
+                    print(f"Interactive combined plot saved to: {save_path}")
+                except ImportError:
+                    print("Warning: mpld3 not available. Cannot save as interactive HTML.")
+                    print("Install with: pip install mpld3")
+                    print("For better interactive HTML, consider using individual plots with interactive=True")
+                    print("Falling back to PNG format.")
+                    save_path = save_path.replace('.html', '.png')
+                    fig.savefig(save_path, bbox_inches='tight', dpi=300)
+                    print(f"Combined plot saved to: {save_path}")
+            else:
+                fig.savefig(save_path, bbox_inches='tight', dpi=300)
+                print(f"Combined plot saved to: {save_path}")
+
+        if show_plot:
+            plt.show()
+        else:
+            plt.close(fig)
 
 
 class myMetric:
@@ -438,12 +885,13 @@ class transformer_model(myMetric):
         save_result_dataset_format="hf",
         map_kwargs=None
     ):
+        dataset = load_to_hf_dataset(dataset)
 
         if map_kwargs is None:
             map_kwargs = {}
 
         #if user has not set these parameters inside kwargs then use our default params:
-        map_kwargs.setdefault("batched", False)
+        map_kwargs.setdefault("batched", True)
         map_kwargs.setdefault("batch_size", 10)
 
         #if not already created, init pipeline
@@ -512,25 +960,31 @@ class factcc(transformer_model):
         # Check if the result is batched (a list of lists) or not
         if isinstance(result["predictions"][0], list):
             # If batched, iterate over each batch
-            return {
-                "predictions": [
-                    {self.convert_label(label["label"]): label["score"] for label in batch}
-                    for batch in result["predictions"]
-                ]
-            }
+            predictions = [
+                            {self.convert_label(label["label"]): label["score"] for label in batch}
+                            for batch in result["predictions"]
+                          ]
+            score = [ batch["HALL"] for batch in predictions]
+            result = {"predictions": predictions,
+                      "score" : score}
+            return result
         else:
             # If not batched, process directly
-            return {
-                "predictions": [
+            predictions = [
                     {self.convert_label(label["label"]): label["score"] for label in result["predictions"]}
                 ]
+            score = predictions["HALL"] 
+            result = {
+                "predictions": predictions,
+                "score": score
             }
+            return result
 
     #Execution of the pipeline at row (or batch) level
     # Adding a formatting
     def run_pipeline(self, batch, source_col, gen_col, top_k, function_to_apply, truncation, padding):
         result = super().run_pipeline(batch, source_col, gen_col, top_k, function_to_apply, truncation, padding)
-
+        
         return self.format_result(result)
 
 
@@ -650,7 +1104,7 @@ class qgqa_based_metric(myMetric):
     # Just adding the prefix
     def format_qg_output(self, questions):
         questions = questions.split(self.qg_separator)
-        questions = [q for q in questions if q != ""]
+        questions = [q.strip() for q in questions if q != ""]
 
         # Remove duplicates while maintaining order
         seen = set()
@@ -729,11 +1183,15 @@ class qgqa_based_metric(myMetric):
         #Run the question answering model on each question
         #Do it in the context of the source, and of the generation
         all_answers_batch = [
-                                [
-                                    {src_col: self.generate_answers(question, src_col),
-                                    gen_col: self.generate_answers(question, gen_col)}
-                                for question in row]
-                            for row in src_questions]
+            [
+                {
+                    src_col: self.generate_answers(question, batch[src_col][i]),
+                    gen_col: self.generate_answers(question, batch[gen_col][i])
+                }
+                for question in questions_for_row
+            ]
+            for i, questions_for_row in enumerate(src_questions)
+        ]
 
         #Give a score to each answer when comparing it between contexts (source/generation) in the same line (default: token-level F1)
         #For each lines, group the scores of all it's answers (default: Average)
@@ -744,7 +1202,7 @@ class qgqa_based_metric(myMetric):
         if not batched:
             score = score[0]
 
-        output={"scores": score}
+        output={"score": score}
 
         if keep_questions:
             output["questions"]=src_questions
@@ -770,6 +1228,7 @@ class qgqa_based_metric(myMetric):
         save_result_dataset_format="hf",
         map_kwargs=None
     ):
+        dataset = load_to_hf_dataset(dataset)
 
         if map_kwargs is None:
             map_kwargs = {}
@@ -807,6 +1266,24 @@ class qgqa_based_metric(myMetric):
             self.save_results(folder_path=save_result_dataset_folder_path, format=save_result_dataset_format)
 
         return self.evaluated_dataset
+
+
+#------------------------------------
+# QAGS
+#------------------------------------
+#Reproduces the method highlited in QAGS but with other models
+
+class qags(qgqa_based_metric):
+    def __init__(self) -> None:
+        super().__init__(qg_model_path="valhalla/t5-small-e2e-qg",
+                        qa_model_path= "valhalla/t5-small-qa-qg-hl",
+                        qg_tokenizer_path= "valhalla/t5-small-e2e-qg",
+                        qa_tokenizer_path= "valhalla/t5-small-qa-qg-hl",
+                        metric_name="qags",
+                        custom_metric=False,
+                        qg_prefix="generate questions: ",
+                        qg_separator="<sep>")
+
 
 #------------------------------------
 # FEQA
@@ -1004,6 +1481,24 @@ class entity_based_metric(myMetric):
         fact_accuracy = len(gen_entities_prime) / len(gen_entities) if gen_entities else 0
         return fact_accuracy
 
+    def check_and_replace_none(self, input_data, col_name):
+        if isinstance(input_data, list):
+            if any(x is None for x in input_data):
+                warnings.warn(
+                    f"Some entries in column '{col_name}' are None. Converting them to empty strings.",
+                    UserWarning
+                )
+                return [x if x is not None else "" for x in input_data]
+        else:
+            if input_data is None:
+                warnings.warn(
+                    f"Input for column '{col_name}' is None. Converting it to an empty string.",
+                    UserWarning
+                )
+                return ""
+        return input_data
+
+    
     #Execution of the pipeline at row (or batch) level
     #NOTE: Possibly overloaded in metric-specific class
     def run_pipeline(self, batch, batched, source_col, gen_col, keep_entities, top_k, truncation, padding):
@@ -1014,6 +1509,12 @@ class entity_based_metric(myMetric):
         if not batched:
             batch = {key: [value] for key, value in batch.items()}
 
+        
+        # Check and replace None values in the source and generated columns.
+        batch[source_col] = self.check_and_replace_none(batch[source_col], source_col)
+        batch[gen_col] = self.check_and_replace_none(batch[gen_col], gen_col)
+
+        
         #Source
         entities_src_tokens = self.er_pipeline(batch[source_col], return_tensors=True, return_text=False)
         entities_src_tokens = [ line["generated_token_ids"] for line in entities_src_tokens]
@@ -1034,7 +1535,7 @@ class entity_based_metric(myMetric):
         if not batched:
             score = score[0]
 
-        output={"scores": score}
+        output={"score": score}
 
         if keep_entities:
             if not batched:
@@ -1061,6 +1562,7 @@ class entity_based_metric(myMetric):
         save_result_dataset_format="hf",
         map_kwargs=None
     ):
+        dataset = load_to_hf_dataset(dataset)
 
         if map_kwargs is None:
             map_kwargs = {}
