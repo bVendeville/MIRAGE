@@ -154,7 +154,9 @@ scores.plot(
     interactive=False
 )
 ```
-![Confusion matrix](plots/confusion_matrix.png)
+![Confusion Matrix](plots/confusion_matrix.png)
+![Precision Recall](plots/precision_recall_curve.png)
+![ROC Curve](plots/roc_curve.png)
 
 For combined plots:
 
