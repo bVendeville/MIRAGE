@@ -15,7 +15,7 @@
 
 **Mirage** is a modular Python library for benchmarking factual consistency in natural language generation. It offers a standardized interface to load, evaluate, and visualize results across multiple classes of factuality metrics including:
 
-- Classification-based (e.g., FactCC, TrueTeacher)
+- Classification-based (e.g., FactCC)
 - QA/QG-based (e.g., QAGS, FEQA)
 - Entity-based (e.g., FactAcc)
 
