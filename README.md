@@ -141,7 +141,7 @@ display(score_manager.results)
 
 ```python
 # Choosing metrics to plot
-plot_list = ["metrics_bar", "roc_curve", "precision_recall_curve", "confusion_matrix"]
+plot_list = ["roc_curve", "precision_recall_curve", "confusion_matrix"]
 
 # Plot results
 scores.plot(
@@ -162,13 +162,13 @@ For combined plots:
 
 ```python
 scores.combined_plots(
-    plot_list=plot_list,
+    plot_list=["score_distribution", "metrics_bar", "roc_curve", "precision_recall_curve", "confusion_matrix"],
     title="FactCC Evaluation",
     show_plot=True,
     save_path="results/plots/combined_metrics.png"
 )
 ```
-![Combined Plot](plots/plots.png)
+![Combined Plot](plots/all_plots.png)
 
 
 ## 🧠 Metric Overview
