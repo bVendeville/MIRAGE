@@ -7,7 +7,7 @@
     ³ University of Amsterdam, Amsterdam, The Netherlands  
 
 **Status**: Research Resource Paper Submission (2025)  
-**License**: _To be updated_
+**License**: Apache 2.0 License
 
 ---
 
