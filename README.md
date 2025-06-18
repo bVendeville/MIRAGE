@@ -25,6 +25,8 @@ This library is designed for researchers and practitioners aiming to evaluate mo
 
 ## 📦 Installation
 
+For this library you need python 3.12
+
 ```bash
 git clone https://github.com/YOUR_USERNAME/mirage.git
 cd mirage
