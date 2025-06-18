@@ -1305,11 +1305,17 @@ class feqa(qgqa_based_metric):
 
     #creating pipeline, not done at init to save on space if user only want to save locally or use his own pipeline
     def create_pipeline(self, **kwargs) -> pipeline :
-       self.create_qa_pipeline(**kwargs)
-       self.create_qg_pipeline(**kwargs)
-       self.spacy_model = spacy.load("en_core_web_sm")
-
-       return {"qa_pipeline":self.qa_pipeline,"qg_pipeline":self.qg_pipeline, "spacy_model":self.spacy_model}
+        self.create_qa_pipeline(**kwargs)
+        self.create_qg_pipeline(**kwargs)
+        try:
+            self.spacy_model = spacy.load("en_core_web_sm")
+        except OSError:
+            # Automatically download the model if it's not found
+            from spacy.cli import download
+            download("en_core_web_sm")
+            self.spacy_model = spacy.load("en_core_web_sm")
+        
+        return {"qa_pipeline":self.qa_pipeline,"qg_pipeline":self.qg_pipeline, "spacy_model":self.spacy_model}
 
     #Used to extract all named entities and noun chunks.
     # For each one of them we get a copy of the input where they are enclosed in the defined highlight_token (by default <hl>)
