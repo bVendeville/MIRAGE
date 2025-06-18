@@ -28,10 +28,9 @@ This library is designed for researchers and practitioners aiming to evaluate mo
 For this library you need python 3.12
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/mirage.git
+git clone https://github.com/bVendeville/MIRAGE.git
 cd mirage
 pip install -r requirements.txt
-python -m spacy download en_core_web_sm  # Required for FEQA
 ```
 
 Optional (for saving interactive plots):
