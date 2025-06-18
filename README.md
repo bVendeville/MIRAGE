@@ -23,6 +23,14 @@ This library is designed for researchers and practitioners aiming to evaluate mo
 
 ---
 
+## Datasets
+
+The datasets in true/ are provided by 
+
+https://github.com/google-research/true
+
+---
+
 ## 📦 Installation
 
 For this library you need python 3.12
